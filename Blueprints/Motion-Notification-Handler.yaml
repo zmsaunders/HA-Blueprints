@@ -1,0 +1,85 @@
+blueprint:
+  name: Motion Camera Notification Actions Handler
+  description: Handles View and Snooze actions from motion camera notifications
+  domain: automation
+  input:
+    pause_helpers:
+      name: Pause Helpers
+      description: List of pause helper entities
+      selector:
+        entity:
+          domain: input_boolean
+          multiple: true
+
+trigger:
+  - platform: event
+    event_type: mobile_app_notification_action
+
+condition:
+  - condition: template
+    value_template: >
+      {{ trigger.event.data.action[:11] == 'VIEW_CAMERA' or 
+         trigger.event.data.action[:7] == 'SNOOZE_' or 
+         trigger.event.data.action == 'LIVE_VIEW' }}
+
+variables:
+  pause_helpers_list: >
+    {{ iif(iif(pause_helpers is iterable, true, false), pause_helpers, [pause_helpers]) | map('string') | list }}
+
+action:
+  - choose:
+      # Live View or View Camera
+      - conditions:
+          - condition: template
+            value_template: >
+              {{ trigger.event.data.action == 'VIEW_CAMERA' or 
+                 trigger.event.data.action == 'LIVE_VIEW' }}
+        sequence:
+          - variables:
+              device_id: "{{ trigger.event.data.device_id | default('') }}"
+              notify_service: "{{ trigger.event.data.notify_service }}"
+              camera_entity: >-
+                {% set uri = trigger.event.data.action_3_uri or '' %}
+                {% if 'camera=' in uri %}
+                  {{ uri.split('camera=')[-1] }}
+                {% else %}
+                  ''
+                {% endif %}
+          - condition: template
+            value_template: "{{ camera_entity != '' }}"
+          - service: "{{ notify_service }}"
+            data:
+              message: "Opening live camera feed"
+              data:
+                url: "/phone-dashboard/camera-feed?camera={{ camera_entity }}"
+          - service: system_log.write
+            data:
+              message: "Live View action sent to {{ notify_service }} for {{ camera_entity }}"
+              level: info
+
+      # Snooze action
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.event.data.action[:7] == 'SNOOZE_' }}"
+        sequence:
+          - variables:
+              helper_suffix: "{{ trigger.event.data.action[7:] | lower }}"
+              pause_helper: "input_boolean.pause_notifications_{{ helper_suffix }}"
+          - condition: template
+            value_template: >
+              {{ pause_helper in pause_helpers_list }}
+          - service: input_boolean.turn_on
+            target:
+              entity_id: "{{ pause_helper }}"
+          - delay:
+              hours: 2
+          - service: input_boolean.turn_off
+            target:
+              entity_id: "{{ pause_helper }}"
+          - service: system_log.write
+            data:
+              message: "Snooze action triggered for: {{ pause_helper }}"
+              level: info
+
+mode: parallel
+max: 10

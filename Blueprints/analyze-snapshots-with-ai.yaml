@@ -1,0 +1,277 @@
+blueprint:
+  name: Motion-Triggered Camera Snapshot + Analysis (Enhanced)
+  description: Takes 3 snapshots when any of the selected sensors detect motion and analyzes the sequence with cooldown and snooze functionality.
+  domain: automation
+  input:
+    camera_entity:
+      name: Camera
+      description: The camera to capture images from.
+      selector:
+        entity:
+          domain: camera
+    motion_sensors:
+      name: Motion Sensors
+      description: One or more motion sensors to monitor.
+      selector:
+        entity:
+          domain: binary_sensor
+          multiple: true
+    provider:
+      name: Provider
+      description: Provider to use for analysis.
+      selector:
+        config_entry:
+          integration: llmvision
+    model:
+      name: Model
+      description: Which model to use for image analysis
+      default: "gpt-4o"
+      selector:
+        text:
+          multiline: false
+    
+    num_snapshots:
+      name: Number of Snapshots
+      description: How many snapshots to take (3-8)
+      default: 3
+      selector:
+        number:
+          min: 3
+          max: 8
+          step: 1
+          mode: box
+
+    snapshot_interval:
+      name: Snapshot Interval
+      description: Time between snapshots (500ms to 3000ms)
+      default: 700
+      selector:
+        number:
+          min: 500
+          max: 3000
+          step: 100
+          unit_of_measurement: ms
+          mode: slider
+
+    custom_prompt:
+      name: Custom LLM Prompt (Optional)
+      description: Custom prompt for image analysis. Leave empty to use default prompt.
+      default: ""
+      selector:
+        text:
+          multiline: true
+
+    snapshot_path:
+      name: Snapshot Base Path
+      description: The path under `/config/www` where snapshots should be saved.
+      default: /config/www/snapshots
+      selector:
+        text:
+
+    notify_devices:
+      name: Mobile Devices
+      description: Select devices to receive the notification
+      selector:
+        device:
+          integration: mobile_app
+          multiple: true
+
+    pause_helpers:
+      name: Pause Helpers (Optional)
+      description: Input boolean helpers to pause notifications for each device. Must be in the same order as devices above, or leave empty to disable pause functionality.
+      default: []
+      selector:
+        entity:
+          domain: input_boolean
+          multiple: true
+
+    notify_color:
+      name: Notification Color
+      default: '#f44336'
+      selector:
+        color_rgb:
+
+    cooldown_duration:
+      name: Cooldown Duration
+      description: Prevent automation from firing again for this duration
+      default: 300
+      selector:
+        number:
+          min: 30
+          max: 3600
+          step: 30
+          unit_of_measurement: seconds
+          mode: slider
+
+variables:
+  camera_entity: !input camera_entity
+  provider: !input provider
+  model: !input model
+  snapshot_path: !input snapshot_path
+  cooldown_duration: !input cooldown_duration
+  num_snapshots: !input num_snapshots
+  snapshot_interval: !input snapshot_interval
+  custom_prompt: !input custom_prompt
+  triggering_sensor: "{{ trigger.entity_id.split('.')[-1] }}"
+  snapshot_folder: "{{ snapshot_path }}/{{ camera_entity.split('.')[-1] }}/{{ triggering_sensor }}"
+  snapshot_files: >
+    {% set ns = namespace(files=[]) %}
+    {% for i in range(1, num_snapshots + 1) %}
+      {% set ns.files = ns.files + [snapshot_folder + '/snapshot_' + i|string + '.jpg'] %}
+    {% endfor %}
+    {{ ns.files }}
+  snapshot_url_2: "/local/snapshots/{{ camera_entity.split('.')[-1] }}/{{ triggering_sensor }}/snapshot_2.jpg"
+  gif_filename: "{{ snapshot_folder }}/motion_sequence.gif"
+  gif_url: "/local/snapshots/{{ camera_entity.split('.')[-1] }}/{{ triggering_sensor }}/motion_sequence.gif"
+  # Convert milliseconds to centiseconds for ImageMagick delay (1 centisecond = 10ms)
+  gif_delay: "{{ (snapshot_interval / 10) | int }}"
+  camera_label: "{{ camera_entity.split('.')[-1] }}"
+  camera_short_name: "{{ camera_label | replace('_clear', '') | replace('_fluent', '') }}"
+  camera_friendly_namel: "{{ camera_short_name | replace('_', ' ') | title }}"
+  camera_motion_entity: "binary_sensor.{{ camera_label | replace('_clear', '_motion') | replace('_fluent', '_motion') }}"
+  automation_entity: "{{ this.entity_id }}"
+  default_prompt: >-
+    A sensor ({{ triggering_sensor }}) has detected an animal, person, or vehicle. Analyze a series of images captured after the event, and summarize any information about the scene, focusing on actions of people, animals, and vehicles. Be short, but descriptive, including information such as gender, age, items they are holding, actions they are performing, species and colors of animals, type and color of vehicles and direction of their travel. Mention the most important information first. Ignore scenery. Provide a clear and concise account of movements and interactions. Do not mention or imply the existence of images—present the information as if directly observing the events. Keep responses to 1-2 sentances. Do not mention frames individually. Do not mention your intent to analyze the sequence. If you are over 95% confident that no humans, animals, or vehicles are present, and the sensor was a false alarm, respond with "Nothing of note detected - False Alarm". Keep your response to 30 words or less.
+  analysis_prompt: "{{ custom_prompt if custom_prompt != '' else default_prompt }}"
+  sensor_icon: >
+    {% set id = trigger.entity_id.lower() %}
+    {% if 'person' in id %}
+      mdi:account
+    {% elif 'pet' in id or 'animal' in id %}
+      mdi:paw
+    {% elif 'vehicle' in id %}
+      mdi:car
+    {% elif 'package' in id %}
+      mdi:package-variant
+    {% else %}
+      mdi:cctv
+    {% endif %}
+  notify_devices_input: !input notify_devices
+  pause_helpers_input: !input pause_helpers
+  notify_services: >
+    {% set ns = namespace(services=[]) %}
+    {% for device_id in notify_devices_input %}
+      {% set loop_index = loop.index0 %}
+      {% set pause_helper = pause_helpers_input[loop_index] if pause_helpers_input and pause_helpers_input|length > loop_index else none %}
+      {% if not pause_helper or states(pause_helper) == 'off' %}
+        {% set device_name = device_attr(device_id, "name") %}
+        {% set sanitized_name = "mobile_app_" + device_name | slugify %}
+        {% set service_name = "notify." ~ sanitized_name %}
+        {% set ns.services = ns.services + [{'service': service_name, 'pause_helper': pause_helper}] %}
+      {% endif %}
+    {% endfor %}
+    {{ ns.services }}
+
+trigger:
+  - platform: state
+    entity_id: !input motion_sensors
+    from: 'off'
+    to: 'on'
+
+condition:
+  # Check if automation is not already running (cooldown check)
+  - condition: template
+    value_template: "{{ this.attributes.current == 0 }}"
+
+action:
+  - condition: template
+    value_template: >
+      {% set entity = camera_motion_entity %}
+      {{ states(entity) == 'on' }}
+  
+  # Take snapshots dynamically based on num_snapshots
+  - repeat:
+      count: "{{ num_snapshots }}"
+      sequence:
+        - service: camera.snapshot
+          data:
+            filename: "{{ snapshot_folder }}/snapshot_{{ repeat.index }}.jpg"
+          target:
+            entity_id: "{{ camera_entity }}"
+        - if:
+            - condition: template
+              value_template: "{{ repeat.index < num_snapshots }}"
+          then:
+            - delay:
+                milliseconds: "{{ snapshot_interval }}"
+
+  # Create GIF from snapshots
+  - service: shell_command.create_motion_gif
+    data:
+      snapshot_folder: "{{ snapshot_folder }}"
+      num_snapshots: "{{ num_snapshots }}"
+      output_gif: "{{ gif_filename }}"
+      gif_delay: "{{ gif_delay }}"
+
+  # Analyze images
+  - service: llmvision.image_analyzer
+    data:
+      provider: "{{ provider }}"
+      model: "{{ model }}"
+      image_file: "{{ snapshot_files | join('\n') }}"
+      message: "{{ analysis_prompt }}"
+      include_filename: true
+      remember: true
+      use_memory: true
+      target_width: 1280
+      max_tokens: 50
+      generate_title: true
+      expose_images: true
+    response_variable: analysis
+
+  # Send notifications to devices that aren't paused
+  - repeat:
+      for_each: "{{ notify_services }}"
+      sequence:
+        - service: "{{ repeat.item.service }}"
+          data:
+            title: "{{ analysis.title }}"
+            message: "{{ analysis.response_text }}"
+            data:
+              image: "{{ gif_url }}"
+              url: "{{ gif_url }}"
+              clickAction: "{{ gif_url }}"
+              group: "{{ camera_friendly_namel }}"
+              alert_once: true
+              ttl: 0
+              priority: high
+              channel: "{{ camera_label }} snapshot"
+              color: !input notify_color
+              notification_icon: "{{ sensor_icon }}"
+              sticky: true
+              camera: "{{ camera_entity }}"
+              notify_serive: "{{ repeat.item.service }}"
+              actions: >
+                {% set actions = [
+                  {
+                    'action': 'VIEW_GIF',
+                    'title': 'View',
+                    'uri': gif_url
+                  }
+                ] %}
+                {% if repeat.item.pause_helper %}
+                  {% set snooze_action = {
+                    'action': 'SNOOZE_' + repeat.item.pause_helper | replace('.', '_') | replace('input_boolean_', '') | upper,
+                    'title': 'Snooze 2hrs'
+                  } %}
+                  {% set actions = actions + [snooze_action] %}
+                {% endif %}
+                {% set live_view_action = {
+                  'action': 'LIVE_VIEW',
+                  'title': '🔴 Live View',
+                  'uri': '/phone-dashboard/camera-feed?camera=' ~ camera_entity
+                } %}
+                {% set actions = actions + [live_view_action] %}
+                {{ actions }}
+              push:
+                interruption-level: active
+                sound:
+                  name: default
+                  volume: 1
+                  critical: true
+
+  # Wait for cooldown period
+  - delay:
+      seconds: "{{ cooldown_duration }}"
+
+mode: single
