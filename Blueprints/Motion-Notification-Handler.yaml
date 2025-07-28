@@ -18,13 +18,15 @@ trigger:
 condition:
   - condition: template
     value_template: >
-      {{ trigger.event.data.action[:11] == 'VIEW_CAMERA' or 
+      {{ trigger.event.data.action[:8] == 'VIEW_GIF' or 
          trigger.event.data.action[:7] == 'SNOOZE_' or 
          trigger.event.data.action == 'LIVE_VIEW' }}
 
 variables:
+  pause_helpers: !input pause_helpers
   pause_helpers_list: >
-    {{ iif(iif(pause_helpers is iterable, true, false), pause_helpers, [pause_helpers]) | map('string') | list }}
+    {% set helpers = pause_helpers if pause_helpers is defined and pause_helpers else [] %}
+    {{ helpers if helpers is iterable and helpers is not string else [helpers] | map('string') | list }}
 
 action:
   - choose:
@@ -37,11 +39,18 @@ action:
         sequence:
           - variables:
               device_id: "{{ trigger.event.data.device_id | default('') }}"
-              notify_service: "{{ trigger.event.data.notify_service }}"
+              notify_service: >-
+                {% set uri = trigger.event.data.action_3_uri or '' %}
+                {% if 'notify_service=' in uri %}
+                  {{ uri.split('notify_service=')[-1].split('&')[0] }}
+                {% else %}
+                  {{ trigger.event.data.notify_service }}
+                {% endif %}
+              # Extract camera_entity from the URL param if present
               camera_entity: >-
                 {% set uri = trigger.event.data.action_3_uri or '' %}
                 {% if 'camera=' in uri %}
-                  {{ uri.split('camera=')[-1] }}
+                  {{ uri.split('camera=')[-1].split('&')[0] }}
                 {% else %}
                   ''
                 {% endif %}
@@ -63,7 +72,7 @@ action:
             value_template: "{{ trigger.event.data.action[:7] == 'SNOOZE_' }}"
         sequence:
           - variables:
-              helper_suffix: "{{ trigger.event.data.action[7:] | lower }}"
+              helper_suffix: "{{ trigger.event.data.action[27:] | lower }}"
               pause_helper: "input_boolean.pause_notifications_{{ helper_suffix }}"
           - condition: template
             value_template: >

@@ -229,8 +229,8 @@ action:
             message: "{{ analysis.response_text }}"
             data:
               image: "{{ gif_url }}"
-              url: "{{ gif_url }}"
-              clickAction: "{{ gif_url }}"
+              url: "/phone-dashboard/camera-feed?camera={{ camera_entity }}&notify_service={{ repeat.item.service }}"
+              clickAction: "/phone-dashboard/camera-feed?camera={{ camera_entity }}&notify_service={{ repeat.item.service }}"
               group: "{{ camera_friendly_namel }}"
               alert_once: true
               ttl: 0
@@ -240,28 +240,17 @@ action:
               notification_icon: "{{ sensor_icon }}"
               sticky: true
               camera: "{{ camera_entity }}"
-              notify_serive: "{{ repeat.item.service }}"
               actions: >
-                {% set actions = [
-                  {
-                    'action': 'VIEW_GIF',
-                    'title': 'View',
-                    'uri': gif_url
-                  }
-                ] %}
                 {% if repeat.item.pause_helper %}
-                  {% set snooze_action = {
-                    'action': 'SNOOZE_' + repeat.item.pause_helper | replace('.', '_') | replace('input_boolean_', '') | upper,
-                    'title': 'Snooze 2hrs'
-                  } %}
-                  {% set actions = actions + [snooze_action] %}
+                  {% set actions = [
+                    {
+                      'action': 'SNOOZE_' + repeat.item.pause_helper | replace('.', '_') | replace('input_boolean_', '') | upper,
+                      'title': 'Snooze 2hrs'
+                    }
+                  ] %}
+                {% else %}
+                  {% set actions = [] %}
                 {% endif %}
-                {% set live_view_action = {
-                  'action': 'LIVE_VIEW',
-                  'title': '🔴 Live View',
-                  'uri': '/phone-dashboard/camera-feed?camera=' ~ camera_entity
-                } %}
-                {% set actions = actions + [live_view_action] %}
                 {{ actions }}
               push:
                 interruption-level: active
